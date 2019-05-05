@@ -1,4 +1,5 @@
 from tqdm import tqdm, tqdm_notebook
+import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 import tensorflow_datasets as tfds
@@ -60,7 +61,24 @@ def pad(x, length=None) -> tuple:
 
     return keras.preprocessing.sequence.pad_sequences(x, maxlen=length, padding='post'), length
 
+def logits_to_id(logits):
+    """
+    Turns logits into word ids
+    :param logits: Logits from a neural network
+    """
+    return [prediction for prediction in np.argmax(logits, 1)]
 
+def id_to_text(idx, tokenizer):
+    """
+    Turns id into text using the tokenizer
+    :param idx: word id
+    :param tokenizer: Keras Tokenizer fit on the labels
+    :return: String that represents the text of the logits
+    """
+    index_to_words = {id: word for word, id in tokenizer.word_index.items()}
+    index_to_words[0] = '<PAD>'
+
+    return ' '.join([index_to_words[prediction] for prediction in idx])
 
 
 

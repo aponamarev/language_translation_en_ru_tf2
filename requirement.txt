@@ -1,0 +1,5 @@
+#python3.6
+tqdm
+jupyter==1.0.0
+tensorflow==2.0.0-alpha0
+tensorflow-datasets==1.0.2

@@ -1,7 +1,8 @@
+from tqdm import tqdm, tqdm_notebook
 import tensorflow as tf
 from tensorflow import keras
 import tensorflow_datasets as tfds
-from tensorflow_datasets.translate.ted_hrlr import TedHrlrTranslate, TedHrlrConfig
+from tensorflow_datasets.translate.ted_hrlr import TedHrlrTranslate
 
 
 def data_etl(lang_pairs: str = 'ru_to_en', download_dir: str = ".") -> dict:
@@ -37,7 +38,6 @@ def data_etl(lang_pairs: str = 'ru_to_en', download_dir: str = ".") -> dict:
 
     return {'x': x, 'y': y, 'x_tk': x_tk, 'y_tk': y_tk, 'x_length': x_length, 'y_length': y_length}
 
-
 def tokenize(x):
     """
     Tokenize x
@@ -47,7 +47,6 @@ def tokenize(x):
     x_tk = keras.preprocessing.text.Tokenizer()
     x_tk.fit_on_texts(x)
     return x_tk.texts_to_sequences(x), x_tk
-
 
 def pad(x, length=None) -> tuple:
     """

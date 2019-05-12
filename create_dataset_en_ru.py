@@ -50,7 +50,7 @@ def data_etl(download_dir: str = ".", file_name: str = "en_ru.tgz", n_lines: int
         # remove short and long sequences based on sequences
         lengths = list(map(lambda s: len(s.split()), ds))
         # valid lengths only used for mean and std calculations while lengths used to filter out en and ru datasets
-        valid_lengths = np.fromiter(filter(lambda l: l>3, lengths), dtype=np.int)
+        valid_lengths = np.fromiter(filter(lambda l: l>6, lengths), dtype=np.int)
 
         lengths_mean: float = valid_lengths.mean()
         lengths_std: float = valid_lengths.std()
@@ -59,7 +59,7 @@ def data_etl(download_dir: str = ".", file_name: str = "en_ru.tgz", n_lines: int
         length_lim_upper = int(lengths_mean + lengths_std * 1)
 
         # remove very short sequences
-        length_lim_lower = max(4, int(lengths_mean - lengths_std * 2))
+        length_lim_lower = max(7, int(lengths_mean - lengths_std * 2))
 
         valid_idx = list(filter(lambda idx: length_lim_lower <= lengths[idx] < length_lim_upper, valid_idx))
 
@@ -152,7 +152,7 @@ def id_to_text(idx, tokenizer):
 
 def main() -> int:
 
-    dataset = data_etl(download_dir=".", n_lines=50000, en_vocab_size=3500, ru_vocab_size=15000)
+    dataset = data_etl(download_dir=".", n_lines=55000, en_vocab_size=3500, ru_vocab_size=15000)
     print("Source(en) first example:")
     print(id_to_text(dataset['x'][0], dataset['x_tk']))
     print("Target(ru) first example:")

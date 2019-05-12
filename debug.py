@@ -7,45 +7,87 @@ from tensorflow import keras
 
 
 def data_etl(download_dir: str = ".", file_name: str = "en_ru.tgz", n_lines: int = 3000,
-             lenght_lim_lower: int = 4, length_lim_upper: int = 500, num_words: int = 5000) -> dict:
+             num_words: int = 5000) -> dict:
     path = os.path.join(download_dir, file_name)
+    en_path = os.path.join(download_dir, "paracrawl-release1.en-ru.zipporah0-dedup-clean.en")
+    ru_path = os.path.join(download_dir, "paracrawl-release1.en-ru.zipporah0-dedup-clean.ru")
 
     print("Start data ETL")
 
     if os.path.isfile(path):
         print("Reuse pre-downloaded " + path)
     else:
-        # download a dataset
+        # download a data-set
         print("Start downloading")
-        subprocess.run(
-                ["curl", "--output",
+        completed = subprocess.run(
+                ["curl",
                  "https://s3.amazonaws.com/web-language-models/paracrawl/release1/paracrawl-release1.en-ru.zipporah0-dedup-clean.tgz",
+                 "--output",
                  path]
         )
-        # extract
+        if completed.check_returncode() is not None:
+            print("Downloading returned error code:", completed.check_returncode())
+    # extract
+    if not (os.path.isfile(en_path) and os.path.isfile(ru_path)):
         subprocess.run("tar --extract --file".split() + [path])
-        print("Data downloaded and extracted")
+    print("Data downloaded and extracted")
 
     # read data
-    en = read_lines("paracrawl-release1.en-ru.zipporah0-dedup-clean.en", n_lines)
-    ru = read_lines("paracrawl-release1.en-ru.zipporah0-dedup-clean.ru", n_lines)
+    en = read_lines(en_path, n_lines)
+    ru = read_lines(ru_path, n_lines)
 
     print("Extracted successfully")
+    # Transformation
+    # remove invalid samples
+    valid_idx = list(
+            filter(lambda idx: 0.5 > len(re.sub("[^а-я]"," ", ru[idx]).split()) / len(ru[idx].split()),
+                   range(len(ru)))
+    )
+
+    # slit numbers
+    en = [re.sub("[0-9]", " \g<0>", en[idx]) for idx in valid_idx]
+    ru = [re.sub("[0-9]", " \g<0>", ru[idx]) for idx in valid_idx]
+
+    # remove invalid samples
+    # for en
+    lengths = np.array([len(s.split()) for s in en])
+    l_mean = lengths.mean()
+    l_std = lengths.std()
+
+    # remove extra long sequence as they will skew the loss towards 0
+    length_lim_upper = int(l_mean + l_std * 2)
+
+    # remove very short sequences
+    lenght_lim_lower = max(4, int(l_mean - l_std * 2))
 
     # filter out small samples
-    indices = list(filter(lambda idx: length_lim_upper > len(en[idx].split()) >=lenght_lim_lower, range(len(en))))
-    en = [en[idx] for idx in indices]
-    ru = [ru[idx] for idx in indices]
+    valid_idx = list(filter(lambda idx: length_lim_upper > len(en[idx].split()) >= lenght_lim_lower, range(len(en))))
+    en = [en[idx] for idx in valid_idx]
+    ru = [ru[idx] for idx in valid_idx]
+
+    # for ru
+    lengths = np.array([len(s.split()) for s in ru])
+    l_mean = lengths.mean()
+    l_std = lengths.std()
+
+    # remove extra long sequence as they will skew the loss towards 0
+    length_lim_upper = int(l_mean + l_std * 2)
+
+    # remove very short sequences
+    lenght_lim_lower = max(4, int(l_mean - l_std * 2))
+
+    # filter out small samples
+    valid_idx = list(filter(lambda idx: length_lim_upper > len(ru[idx].split()) >= lenght_lim_lower, range(len(ru))))
+    en = [en[idx] for idx in valid_idx]
+    ru = [ru[idx] for idx in valid_idx]
 
     # Tockenize
-    en = [re.sub("[0-9]", " \g<0>", s) for s in en]
-    ru = [re.sub("[0-9]", " \g<0>", s) for s in ru]
-
     x, x_tk = tokenize(en, num_words=num_words, filters_regex=None)
     y, y_tk = tokenize(ru, num_words=num_words * 3, filters_regex=None)
 
     x = pad(x)
-    y = pad(y)
+    y_length = max([len(sentence) for sentence in y])
+    y = pad(y, length=x.shape[1] if x.shape[1] > y_length else y_length)
 
     print("Transformed successfully")
 
@@ -120,7 +162,8 @@ def id_to_text(idx, tokenizer):
 
 
 if __name__ == '__main__':
-    dataset = data_etl(download_dir=".", n_lines=5000, num_words=3000)
+
+    dataset = data_etl(download_dir=".", n_lines=10000, num_words=3000)
     print(id_to_text(dataset['x'][0], dataset['x_tk']))
     print(id_to_text(dataset['y'][0], dataset['y_tk']))
     print("x shape: ", dataset['x'].shape)

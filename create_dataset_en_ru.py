@@ -4,7 +4,7 @@ import re
 import numpy as np
 from tensorflow import keras
 import pickle as pk
-
+import tensorflow as tf
 
 root_path, file_name = os.path.split(os.path.abspath(__file__))
 data_path = os.path.join(root_path, "data")
@@ -151,6 +151,7 @@ def id_to_text(idx, tokenizer):
 
 
 def main() -> int:
+
 
     dataset = data_etl(download_dir=".", n_lines=55000, en_vocab_size=3500, ru_vocab_size=15000)
     print("Source(en) first example:")

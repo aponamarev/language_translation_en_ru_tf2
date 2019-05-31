@@ -1,6 +1,6 @@
 import os
 from tqdm import tqdm, tqdm_notebook
-from typing import Callable, Union, Iterable
+from typing import Callable, Iterable
 from functools import partial
 import numpy as np
 import pickle as pk
@@ -64,7 +64,6 @@ class Decoder(keras.Model):
     def __init__(self, vocab_size: int, gru_units: int, embeddings_units: int):
         super(Decoder, self).__init__()
 
-        self.hs_BN = keras.layers.BatchNormalization(axis=-1)
         # the embedding layer needs to contain 1 additional token for the start of the sequence (dataset['y'].max()+1)
         self.embedding = keras.layers.Embedding(vocab_size+1, embeddings_units)
         self.embedding_BN = keras.layers.TimeDistributed(keras.layers.BatchNormalization(axis=-1))
@@ -79,7 +78,7 @@ class Decoder(keras.Model):
                 self.embedding(x)
         )
 
-        seq, h_t = self.gru(embedded, initial_state = self.hs_BN(hidden))
+        seq, h_t = self.gru(embedded, initial_state = hidden)
         p = self.dense(self.gru_BN(seq))
 
         return p, h_t
@@ -129,24 +128,33 @@ def train_step(inputs, targets,
                start_word_index):
 
     loss = 0.0
-    BATCH_SIZE = int(targets.shape[0])
-    N_STEPS = int(targets.shape[1])
+    valid_elements = 0.0
 
     with tf.GradientTape() as tape:
+
+        BATCH_SIZE = int(targets.shape[0])
+        N_STEPS = int(targets.shape[1])
 
         predictions = tf.TensorArray(dtype=tf.float32, size=N_STEPS)
         h_s = encoder(inputs=inputs)
         # Kick-off decoding with a start word
-        dec_input = tf.expand_dims([start_word_index] * BATCH_SIZE, 1)
+        dec_input = tf.expand_dims(tf.constant([start_word_index] * BATCH_SIZE, dtype=tf.int32), 1)
         # Teacher forcing - feeding the target as the next input
         h_t = h_s
         for t in range(N_STEPS):
+            target = targets[:, t]
             p, h_t = decoder(dec_input, hidden=h_t)
             predictions.write(t, tf.squeeze(p))
             # normalize loss across time dimension
-            loss += loss_fn(targets[:, t], p) / tf.cast(N_STEPS, p.dtype)
+            t_loss = loss_fn(target, p)
+            mask = tf.cast(tf.math.logical_not(tf.math.equal(target, 0)), dtype=t_loss.dtype)
+            loss += t_loss * mask
+            valid_elements += mask
             # using teacher forcing
-            dec_input = tf.expand_dims(targets[:, t], 1)
+            dec_input = target
+
+        valid_elements = tf.maximum(valid_elements, tf.ones_like(valid_elements))
+        loss /= valid_elements
 
     predictions = predictions.stack()
     predictions = tf.transpose(predictions, (1,0,2))
@@ -173,7 +181,7 @@ def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
         pbar = tqdm(range(steps), desc="Epoch {}".format(epoch))
         minibatch = enumerate(dataset.take(steps))
 
-        for i in pbar:
+        for _ in pbar:
 
             _, (x, y) = next(minibatch)
             loss, predictions = train_step(x, y)
@@ -203,11 +211,13 @@ if __name__ == '__main__':
 
     optimizer = tf.keras.optimizers.Adam(lr=learning_rate)
 
-    loss_fn = keras.losses.sparse_categorical_crossentropy
+    loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False, reduction='none')
     metrics = [keras.metrics.SparseCategoricalAccuracy()]
     # the decoder contains embedding with target vocabulary size + 1. Additional (+1) token is reserved for the start
     # token.
     train_step_fn = partial(train_step, encoder=encoder, decoder=decoder, loss_fn=loss_fn, optimizer=optimizer,
                             start_word_index=dataset['y'].max()+1)
 
-    fit(dataset['x'], dataset['y'], batch_size=batch_size, epochs=epochs, train_step=train_step_fn, metrics=metrics)
+    fit(dataset['x'], dataset['y'][:,:, None],
+        batch_size=batch_size, epochs=epochs,
+        train_step=train_step_fn, metrics=metrics)

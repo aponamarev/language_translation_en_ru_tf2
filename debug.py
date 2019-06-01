@@ -47,7 +47,7 @@ class Encoder(keras.Model):
 
         self.embedding = keras.layers.Embedding(vocab_size, embeddings_units)
         self.BN_embedding = keras.layers.TimeDistributed(keras.layers.BatchNormalization(axis=-1))
-        self.gru = keras.layers.GRU(gru_units, return_sequences=False, return_state=True)
+        self.gru = keras.layers.GRU(gru_units, return_sequences=False)
 
     def call(self, x):
 
@@ -55,7 +55,7 @@ class Encoder(keras.Model):
         bn_embedding = self.BN_embedding(embedded)
         h_s = self.gru(bn_embedding)
 
-        return h_s[0]
+        return h_s
 
 
 class Decoder(keras.Model):
@@ -127,9 +127,6 @@ def train_step(inputs, targets,
                loss_fn, optimizer,
                start_word_index):
 
-    loss = 0.0
-    valid_elements = 0.0
-
     with tf.GradientTape() as tape:
 
         BATCH_SIZE = int(targets.shape[0])
@@ -145,19 +142,16 @@ def train_step(inputs, targets,
             target = targets[:, t]
             p, h_t = decoder(dec_input, hidden=h_t)
             predictions.write(t, tf.squeeze(p))
-            # normalize loss across time dimension
-            t_loss = loss_fn(target, p)
-            mask = tf.cast(tf.math.logical_not(tf.math.equal(target, 0)), dtype=t_loss.dtype)
-            loss += t_loss * mask
-            valid_elements += mask
             # using teacher forcing
             dec_input = target
 
-        valid_elements = tf.maximum(valid_elements, tf.ones_like(valid_elements))
-        loss /= valid_elements
+        predictions = predictions.stack()
+        predictions = tf.transpose(predictions, (1, 0, 2))
 
-    predictions = predictions.stack()
-    predictions = tf.transpose(predictions, (1,0,2))
+        loss = loss_fn(targets, predictions)
+        mask = tf.cast(tf.math.logical_not(tf.math.equal(tf.squeeze(targets), 0)), dtype=loss.dtype)
+        loss *= mask
+
     # obtain all trainable variables
     variables = encoder.trainable_variables + decoder.trainable_variables
 
@@ -166,7 +160,9 @@ def train_step(inputs, targets,
 
     optimizer.apply_gradients(zip(gradients, variables))
 
-    return tf.reduce_mean(loss), predictions
+    avg_loss = tf.reduce_sum(loss) / tf.maximum(tf.reduce_sum(mask), 1.0)
+
+    return avg_loss, predictions
 
 
 def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
@@ -186,7 +182,7 @@ def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
             _, (x, y) = next(minibatch)
             loss, predictions = train_step(x, y)
             for m in metrics:
-                m.update_state(y, predictions)
+                metric_value = m.update_state(y, predictions)
 
             reporting = {m.name: m.result().numpy()
                          for m in metrics}

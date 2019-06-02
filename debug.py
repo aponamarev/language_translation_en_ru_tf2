@@ -132,7 +132,7 @@ def train_step(inputs, targets,
         BATCH_SIZE = int(targets.shape[0])
         N_STEPS = int(targets.shape[1])
 
-        predictions = tf.TensorArray(dtype=tf.float32, size=N_STEPS)
+        predictions = []
         h_s = encoder(inputs=inputs)
         # Kick-off decoding with a start word
         dec_input = tf.expand_dims(tf.constant([start_word_index] * BATCH_SIZE, dtype=tf.int32), 1)
@@ -141,11 +141,11 @@ def train_step(inputs, targets,
         for t in range(N_STEPS):
             target = targets[:, t]
             p, h_t = decoder(dec_input, hidden=h_t)
-            predictions.write(t, tf.squeeze(p))
+            predictions.append(tf.squeeze(p))
             # using teacher forcing
             dec_input = target
 
-        predictions = predictions.stack()
+        predictions = tf.stack(predictions)
         predictions = tf.transpose(predictions, (1, 0, 2))
 
         loss = loss_fn(targets, predictions)
@@ -157,6 +157,8 @@ def train_step(inputs, targets,
 
     # obtain gradient history across all steps with respect to trainable variables
     gradients = tape.gradient(loss, variables)
+    # clip gradients to avoid explosion and bouncing out of bounds
+    gradients, _ = tf.clip_by_global_norm(gradients, clip_norm=3.0)
 
     optimizer.apply_gradients(zip(gradients, variables))
 
@@ -165,28 +167,85 @@ def train_step(inputs, targets,
     return avg_loss, predictions
 
 
-def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
-        train_step: Callable[[np.ndarray, np.ndarray], float], metrics: Iterable[keras.metrics.Metric]):
+def evaluate(sentence: np.ndarray, encoder: Encoder, decoder: Decoder, start_word_index: int) -> tf.Tensor:
+    BATCH_SIZE = 1 if len(sentence.shape) == 1 else sentence.shape[0]
+    N_STEPS = sentence.shape[-1]
 
-    steps = inputs.shape[0] // batch_size
-    dataset = tf.data.Dataset.from_tensor_slices((inputs, targets))
-    dataset = dataset.batch(batch_size, drop_remainder=True)
+    predictions = []
+
+    inputs = tf.convert_to_tensor(sentence)
+    h_s = encoder(inputs=inputs)
+
+    # Kick-off decoding with a start word
+    dec_input = tf.expand_dims(tf.constant([start_word_index] * BATCH_SIZE, dtype=tf.int32), 1)
+    # Teacher forcing - feeding the target as the next input
+    h_t = h_s
+    for t in range(N_STEPS):
+        p, h_t = decoder(dec_input, hidden=h_t)
+        predictions.append(tf.squeeze(p))
+        # using teacher forcing
+        dec_input = tf.argmax(p, axis=-1)
+
+    predictions = tf.stack(predictions)
+    predictions = tf.transpose(predictions, (1, 0, 2))
+
+    return predictions
+
+
+def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
+        train_step: Callable[[np.ndarray, np.ndarray], float], eval_step: Callable[[np.ndarray], np.ndarray],
+        metrics: Iterable[keras.metrics.Metric],
+        test_set: float = 0.1):
+    # train vs test split
+    _r = list(range(len(inputs)))
+    test_indices = np.random.choice(_r, size=int(np.round(test_set*len(inputs))), replace=False)
+    train_indices = list(set(_r) - set(test_indices))
+
+    train_inputs, train_targets = inputs[train_indices], targets[train_indices]
+    test_inputs, test_targets = inputs[test_indices], targets[test_indices]
+
+    n_train_steps = train_inputs.shape[0] // batch_size
+    train_ds = tf.data.Dataset.from_tensor_slices((train_inputs, train_targets))
+    train_ds = train_ds.batch(batch_size, drop_remainder=True)
+
+    n_test_steps = test_inputs.shape[0] // batch_size
+    test_ds = tf.data.Dataset.from_tensor_slices((test_inputs, test_targets))
+    test_ds = test_ds.batch(batch_size, drop_remainder=True)
 
     for epoch in range(epochs):
 
-        pbar = tqdm(range(steps), desc="Epoch {}".format(epoch))
-        minibatch = enumerate(dataset.take(steps))
+        pbar = tqdm(range(n_train_steps), desc="Epoch {}".format(epoch))
+        minibatch = enumerate(train_ds.take(n_train_steps))
 
+        # train phase
         for _ in pbar:
 
             _, (x, y) = next(minibatch)
             loss, predictions = train_step(x, y)
-            for m in metrics:
-                metric_value = m.update_state(y, predictions)
 
-            reporting = {m.name: m.result().numpy()
-                         for m in metrics}
+            reporting = {}
+            for m in metrics:
+                m.update_state(y, predictions)
+                reporting[m.name] = m.result().numpy()
+
             reporting["loss"] = loss.numpy()
+            pbar.set_postfix(ordered_dict=reporting)
+
+        # test phase
+        for _, (x, y) in enumerate(test_ds.take(n_test_steps)):
+
+            predictions = eval_step(x)
+
+            for m in metrics:
+                m.update_state(y, predictions)
+                metric_name = "test_" + m.name
+                prior = reporting.get(metric_name)
+                if prior is None:
+                    reporting[metric_name] = m.result().numpy()
+                else:
+                    reporting[metric_name] = prior * n_test_steps + m.result().numpy() * len(x) / (
+                            n_test_steps + len(x))
+
             pbar.set_postfix(ordered_dict=reporting)
 
 
@@ -207,13 +266,15 @@ if __name__ == '__main__':
 
     optimizer = tf.keras.optimizers.Adam(lr=learning_rate)
 
-    loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False, reduction='none')
+    loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False,
+                                                         reduction='none')
     metrics = [keras.metrics.SparseCategoricalAccuracy()]
     # the decoder contains embedding with target vocabulary size + 1. Additional (+1) token is reserved for the start
     # token.
     train_step_fn = partial(train_step, encoder=encoder, decoder=decoder, loss_fn=loss_fn, optimizer=optimizer,
                             start_word_index=dataset['y'].max()+1)
+    eval_step_fn = partial(evaluate, encoder=encoder, decoder=decoder, start_word_index=dataset['y'].max()+1)
 
     fit(dataset['x'], dataset['y'][:,:, None],
         batch_size=batch_size, epochs=epochs,
-        train_step=train_step_fn, metrics=metrics)
+        train_step=train_step_fn, eval_step=eval_step_fn, metrics=metrics)

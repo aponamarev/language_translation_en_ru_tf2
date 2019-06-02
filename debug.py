@@ -158,7 +158,7 @@ def train_step(inputs, targets,
     # obtain gradient history across all steps with respect to trainable variables
     gradients = tape.gradient(loss, variables)
     # clip gradients to avoid explosion and bouncing out of bounds
-    gradients, _ = tf.clip_by_global_norm(gradients, clip_norm=3.0)
+    gradients, _ = tf.clip_by_global_norm(gradients, clip_norm=5.0)
 
     optimizer.apply_gradients(zip(gradients, variables))
 
@@ -227,7 +227,10 @@ def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
 
                 reporting = {}
                 for m in metrics:
-                    m.update_state(y, predictions)
+                    m(y, predictions,
+                      sample_weight=tf.cast(tf.math.logical_not(tf.math.equal(tf.squeeze(y), 0)),
+                                            dtype=predictions.dtype)
+                      )
                     reporting[m.name] = m.result().numpy()
 
                 reporting["loss"] = loss.numpy()
@@ -239,7 +242,10 @@ def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
                 predictions = eval_step(x)
 
                 for m in metrics:
-                    m.update_state(y, predictions)
+                    m(y, predictions,
+                      sample_weight=tf.cast(tf.math.logical_not(tf.math.equal(tf.squeeze(y), 0)),
+                                            dtype=predictions.dtype)
+                      )
                     metric_name = "test_" + m.name
                     prior = reporting.get(metric_name)
                     if prior is None:
@@ -268,8 +274,7 @@ if __name__ == '__main__':
 
     optimizer = tf.keras.optimizers.Adam(lr=learning_rate)
 
-    loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=False,
-                                                         reduction='none')
+    loss_fn = focal_loss(gamma=2., alpha=.25)
     metrics = [keras.metrics.SparseCategoricalAccuracy()]
     # the decoder contains embedding with target vocabulary size + 1. Additional (+1) token is reserved for the start
     # token.

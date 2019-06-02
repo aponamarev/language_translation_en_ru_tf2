@@ -214,39 +214,41 @@ def fit(inputs: np.ndarray, targets: np.ndarray, batch_size: int, epochs: int,
 
     for epoch in range(epochs):
 
-        pbar = tqdm(range(n_train_steps), desc="Epoch {}".format(epoch))
-        minibatch = enumerate(train_ds.take(n_train_steps))
+        pbar = tqdm(range(n_train_steps+n_test_steps), desc="Epoch {}".format(epoch))
+        train_minibatch = enumerate(train_ds.take(n_train_steps))
+        test_minibatch = enumerate(test_ds.take(n_test_steps))
 
-        # train phase
-        for _ in pbar:
+        for i in pbar:
 
-            _, (x, y) = next(minibatch)
-            loss, predictions = train_step(x, y)
+            if i < n_train_steps:
+                # train phase
+                _, (x, y) = next(train_minibatch)
+                loss, predictions = train_step(x, y)
 
-            reporting = {}
-            for m in metrics:
-                m.update_state(y, predictions)
-                reporting[m.name] = m.result().numpy()
+                reporting = {}
+                for m in metrics:
+                    m.update_state(y, predictions)
+                    reporting[m.name] = m.result().numpy()
 
-            reporting["loss"] = loss.numpy()
-            pbar.set_postfix(ordered_dict=reporting)
+                reporting["loss"] = loss.numpy()
+                pbar.set_postfix(ordered_dict=reporting)
 
-        # test phase
-        for _, (x, y) in enumerate(test_ds.take(n_test_steps)):
+            else:
+                # test phase
+                _, (x, y) = next(test_minibatch)
+                predictions = eval_step(x)
 
-            predictions = eval_step(x)
+                for m in metrics:
+                    m.update_state(y, predictions)
+                    metric_name = "test_" + m.name
+                    prior = reporting.get(metric_name)
+                    if prior is None:
+                        reporting[metric_name] = m.result().numpy()
+                    else:
+                        reporting[metric_name] = (prior * n_test_steps + m.result().numpy() * len(x)) / (
+                                n_test_steps + len(x))
 
-            for m in metrics:
-                m.update_state(y, predictions)
-                metric_name = "test_" + m.name
-                prior = reporting.get(metric_name)
-                if prior is None:
-                    reporting[metric_name] = m.result().numpy()
-                else:
-                    reporting[metric_name] = prior * n_test_steps + m.result().numpy() * len(x) / (
-                            n_test_steps + len(x))
-
-            pbar.set_postfix(ordered_dict=reporting)
+                pbar.set_postfix(ordered_dict=reporting)
 
 
 if __name__ == '__main__':
